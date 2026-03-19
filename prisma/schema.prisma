@@ -1,0 +1,200 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Team {
+  id           String   @id @default(uuid())
+  name         String   @unique
+  slug         String   @unique
+  contactEmail String?  @map("contact_email")
+  passwordHash String   @map("password_hash")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  bookings           Booking[]
+  recurringTemplates RecurringTemplate[]
+  importedFixtures   ImportedFixture[]
+  notifications      Notification[]
+
+  @@map("teams")
+}
+
+model Admin {
+  id                   String   @id @default(uuid())
+  email                String   @unique
+  name                 String
+  passwordHash         String   @map("password_hash")
+  isActive             Boolean  @default(true) @map("is_active")
+  receiveNotifications Boolean  @default(true) @map("receive_notifications")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  approvedBookings Booking[]      @relation("ApprovedBy")
+  notifications    Notification[]
+
+  @@map("admins")
+}
+
+model Venue {
+  id             String   @id @default(uuid())
+  name           String   @unique
+  slug           String   @unique
+  hasFloodlights Boolean  @default(false) @map("has_floodlights")
+  surfaceType    String?  @map("surface_type")
+  splitConfig    Json?    @map("split_config")
+  isFreeText     Boolean  @default(false) @map("is_free_text")
+  sortOrder      Int      @default(0) @map("sort_order")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  bookings        Booking[]
+  closures        VenueClosure[]
+  importedFixtures ImportedFixture[]
+
+  @@map("venues")
+}
+
+model VenueClosure {
+  id            String    @id @default(uuid())
+  venueId       String    @map("venue_id")
+  closedDate    DateTime  @map("closed_date") @db.Date
+  closedDateEnd DateTime? @map("closed_date_end") @db.Date
+  startTime     String?   @map("start_time")
+  endTime       String?   @map("end_time")
+  reason        String?
+  createdBy     String    @map("created_by")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  venue Venue @relation(fields: [venueId], references: [id], onDelete: Cascade)
+
+  @@index([venueId, closedDate])
+  @@map("venue_closures")
+}
+
+model Booking {
+  id                String   @id @default(uuid())
+  teamId            String?  @map("team_id")
+  venueId           String   @map("venue_id")
+  bookingDate       DateTime @map("booking_date") @db.Date
+  startTime         String   @map("start_time")
+  endTime           String   @map("end_time")
+  bookingType       String   @map("booking_type")
+  status            String   @default("pending")
+  pitchSectionMode  String   @default("full") @map("pitch_section_mode")
+  pitchSectionIndex Int      @default(1) @map("pitch_section_index")
+  opponent          String?
+  competition       String?
+  notes             String?
+  altVenueName      String?  @map("alt_venue_name")
+  recurringGroupId  String?  @map("recurring_group_id")
+  declineReason     String?  @map("decline_reason")
+  createdByType     String   @map("created_by_type")
+  createdById       String   @map("created_by_id")
+  approvedById      String?  @map("approved_by_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  team       Team?  @relation(fields: [teamId], references: [id])
+  venue      Venue  @relation(fields: [venueId], references: [id])
+  approvedBy Admin? @relation("ApprovedBy", fields: [approvedById], references: [id])
+
+  importedFixture ImportedFixture?
+  notifications   Notification[]
+
+  @@index([bookingDate, venueId, status])
+  @@index([teamId, bookingDate])
+  @@index([recurringGroupId])
+  @@index([status])
+  @@map("bookings")
+}
+
+model RecurringTemplate {
+  id               String   @id @default(uuid())
+  teamId           String   @map("team_id")
+  venueId          String   @map("venue_id")
+  dayOfWeek        Int      @map("day_of_week")
+  startTime        String   @map("start_time")
+  endTime          String   @map("end_time")
+  bookingType      String   @map("booking_type")
+  pitchSectionMode String   @default("full") @map("pitch_section_mode")
+  startDate        DateTime @map("start_date") @db.Date
+  endDate          DateTime @map("end_date") @db.Date
+  notes            String?
+  recurringGroupId String   @map("recurring_group_id")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  team Team @relation(fields: [teamId], references: [id])
+
+  @@map("recurring_templates")
+}
+
+model ImportedFixture {
+  id            String   @id @default(uuid())
+  externalHash  String   @unique @map("external_hash")
+  teamId        String?  @map("team_id")
+  venueId       String?  @map("venue_id")
+  bookingId     String?  @unique @map("booking_id")
+  fixtureDate   DateTime @map("fixture_date") @db.Date
+  startTime     String   @map("start_time")
+  homeTeam      String   @map("home_team")
+  awayTeam      String   @map("away_team")
+  competition   String?
+  rawData       Json?    @map("raw_data")
+  lastScrapedAt DateTime @default(now()) @map("last_scraped_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  team    Team?    @relation(fields: [teamId], references: [id])
+  venue   Venue?   @relation(fields: [venueId], references: [id])
+  booking Booking? @relation(fields: [bookingId], references: [id])
+
+  @@map("imported_fixtures")
+}
+
+model Notification {
+  id               String   @id @default(uuid())
+  recipientType    String   @map("recipient_type")
+  recipientTeamId  String?  @map("recipient_team_id")
+  recipientAdminId String?  @map("recipient_admin_id")
+  title            String
+  body             String
+  isRead           Boolean  @default(false) @map("is_read")
+  relatedBookingId String?  @map("related_booking_id")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  team           Team?    @relation(fields: [recipientTeamId], references: [id])
+  admin          Admin?   @relation(fields: [recipientAdminId], references: [id])
+  relatedBooking Booking? @relation(fields: [relatedBookingId], references: [id])
+
+  @@index([recipientType, recipientTeamId, isRead])
+  @@index([recipientType, recipientAdminId, isRead])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorType  String   @map("actor_type")
+  actorId    String?  @map("actor_id")
+  action     String
+  targetType String?  @map("target_type")
+  targetId   String?  @map("target_id")
+  details    Json?
+  ipAddress  String?  @map("ip_address")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@index([targetType, targetId])
+  @@map("audit_log")
+}
+
+model SystemSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_settings")
+}
