@@ -135,18 +135,27 @@ export async function POST(req: NextRequest) {
     const html = await response.text();
     const $ = cheerio.load(html);
 
-    // Get default venue (Ballyhegan)
+    // Get default venue for home fixtures — "Main Pitch" is the home ground
     const defaultVenue = await prisma.venue.findFirst({
-      where: { name: { contains: "Ballyhegan", mode: "insensitive" } },
+      where: { slug: "main-pitch" },
     });
 
     // Get settings for match duration
     const matchDuration = await getSettingValue<number>("match_default_duration", 120);
     const preTime = await getSettingValue<number>("match_pre_time", 60);
-    const totalDuration = matchDuration + preTime; // default: 3 hours total
 
     // Parse fixtures from the page
-    // GAA website fixture rows typically appear in table rows or structured divs
+    // The GAA website uses this structure inside #fixtures-list:
+    //   <h3 class="fix_res_date">Saturday 7th Mar 2026</h3>
+    //   <div class="competition">
+    //     <div class="competition-name"><a>Competition Name</a></div>
+    //     <div class="comp_details">
+    //       <div class="home_team"><a>Team A</a></div>
+    //       <div class="time">14:00</div>
+    //       <div class="away_team"><a>Team B</a></div>
+    //     </div>
+    //     <div class="more_info"><strong>Venue:</strong> <a>Venue Name</a></div>
+    //   </div>
     const fixtureData: Array<{
       date: string;
       time: string;
@@ -156,81 +165,45 @@ export async function POST(req: NextRequest) {
       venue: string;
     }> = [];
 
-    // Try parsing table-based fixture layouts
-    $("table tbody tr, .fixtures-list .fixture-item, .fixture-row, [class*='fixture']").each((_i, el) => {
+    // Iterate over each fixture block inside the fixtures tab
+    $("#fixtures-list div.competition").each((_i, el) => {
       const $el = $(el);
-      const text = $el.text();
 
-      // Try to extract fixture info from table cells
-      const cells = $el.find("td");
-      if (cells.length >= 3) {
-        const dateText = $(cells[0]).text().trim();
-        const timeText = $(cells[1]).text().trim();
-        const teamsText = $(cells[2]).text().trim();
-        const competitionText = cells.length >= 4 ? $(cells[3]).text().trim() : "";
-        const venueText = cells.length >= 5 ? $(cells[4]).text().trim() : "";
-
-        // Parse teams (e.g., "Home Team v Away Team" or "Home Team vs Away Team")
-        const teamsMatch = teamsText.match(/(.+?)\s+v(?:s\.?)?\s+(.+)/i);
-        if (teamsMatch && dateText) {
-          fixtureData.push({
-            date: dateText,
-            time: timeText || "14:00",
-            homeTeam: teamsMatch[1].trim(),
-            awayTeam: teamsMatch[2].trim(),
-            competition: competitionText,
-            venue: venueText,
-          });
-          return;
+      // The date is in the preceding h3.fix_res_date sibling
+      // Walk backwards through previous siblings to find the nearest date heading
+      let dateText = "";
+      let prev = $el.prev();
+      while (prev.length) {
+        if (prev.is("h3.fix_res_date")) {
+          dateText = prev.text().trim();
+          break;
         }
+        // If we hit another .competition, check its previous sibling
+        prev = prev.prev();
       }
 
-      // Try alternative structure: divs with data attributes or class-based layouts
-      const dateEl = $el.find("[class*='date'], .date, time").first();
-      const teamsEl = $el.find("[class*='team'], .teams, .match").first();
-      const venueEl = $el.find("[class*='venue'], .venue, .location").first();
-      const compEl = $el.find("[class*='competition'], .competition, .comp").first();
+      const homeTeam = $el.find(".home_team").first().text().trim();
+      const awayTeam = $el.find(".away_team").first().text().trim();
+      const timeText = $el.find(".time").first().text().trim();
+      const competition = $el.find(".competition-name").first().text().trim();
 
-      if (dateEl.length && teamsEl.length) {
-        const dateText = dateEl.text().trim();
-        const teamsText = teamsEl.text().trim();
-        const venueText = venueEl.text().trim();
-        const compText = compEl.text().trim();
+      // Venue is inside .more_info, after the <strong>Venue:</strong> label
+      const venueLink = $el.find(".more_info a").first();
+      const venue = venueLink.length ? venueLink.text().trim() : "";
 
-        const teamsMatch = teamsText.match(/(.+?)\s+v(?:s\.?)?\s+(.+)/i);
-        if (teamsMatch) {
-          // Extract time from date text if present
-          const timeMatch = dateText.match(/(\d{1,2}[:.]\d{2})/);
-          fixtureData.push({
-            date: dateText,
-            time: timeMatch ? timeMatch[1].replace(".", ":") : "14:00",
-            homeTeam: teamsMatch[1].trim(),
-            awayTeam: teamsMatch[2].trim(),
-            competition: compText,
-            venue: venueText,
-          });
-        }
-      }
-
-      // Fallback: look for common GAA fixture text patterns in the whole text block
-      if (fixtureData.length === 0 || !$el.find("td").length) {
-        const fullMatch = text.match(
-          /(\d{1,2}[\s/.-]\w+[\s/.-]\d{2,4})\s+.*?(\d{1,2}[:.]\d{2})?\s*(.+?)\s+v(?:s\.?)?\s+(.+?)(?:\s+[-|]\s+(.+?))?(?:\s+[-|]\s+(.+?))?$/m
-        );
-        if (fullMatch) {
-          fixtureData.push({
-            date: fullMatch[1].trim(),
-            time: fullMatch[2]?.replace(".", ":") || "14:00",
-            homeTeam: fullMatch[3].trim(),
-            awayTeam: fullMatch[4].trim(),
-            competition: fullMatch[5]?.trim() || "",
-            venue: fullMatch[6]?.trim() || "",
-          });
-        }
+      if (homeTeam && awayTeam && dateText) {
+        fixtureData.push({
+          date: dateText,
+          time: timeText || "14:00",
+          homeTeam,
+          awayTeam,
+          competition,
+          venue,
+        });
       }
     });
 
-    // Filter to home fixtures only (venue contains "Ballyhegan")
+    // Filter to home fixtures only (venue contains "Ballyhegan" or home team is Ballyhegan)
     const homeFixtures = fixtureData.filter(
       (f) =>
         f.venue.toLowerCase().includes("ballyhegan") ||
@@ -239,40 +212,67 @@ export async function POST(req: NextRequest) {
 
     // Process each home fixture
     for (const fixture of homeFixtures) {
-      // Normalize time format
-      const time = fixture.time.includes(":")
-        ? fixture.time
-        : fixture.time.replace(".", ":");
+      // Normalize time format — skip fixtures with "TBC" time
+      const rawTime = fixture.time.trim();
+      if (!rawTime || !/\d{1,2}[:.]\d{2}/.test(rawTime)) {
+        continue; // Skip fixtures without a confirmed time
+      }
+      const time = rawTime.includes(":") ? rawTime : rawTime.replace(".", ":");
       const normalizedTime = time.padStart(5, "0");
 
-      // Parse date - try multiple formats
+      // Parse date — GAA site format: "Saturday 7th Mar 2026"
+      // Strip day-of-week prefix and ordinal suffixes (st, nd, rd, th)
       let fixtureDate: Date | null = null;
-      const dateStr = fixture.date.replace(/\s+/g, " ").trim();
+      const dateStr = fixture.date
+        .replace(/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+/i, "")
+        .replace(/(\d+)(st|nd|rd|th)/i, "$1")
+        .replace(/\s+/g, " ")
+        .trim();
 
-      // Try ISO-like format first
-      const isoMatch = dateStr.match(/(\d{4})-(\d{2})-(\d{2})/);
-      if (isoMatch) {
-        fixtureDate = new Date(`${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`);
-      }
+      // Month name to zero-indexed month number
+      const monthMap: Record<string, number> = {
+        jan: 0, january: 0, feb: 1, february: 1, mar: 2, march: 2,
+        apr: 3, april: 3, may: 4, jun: 5, june: 5, jul: 6, july: 6,
+        aug: 7, august: 7, sep: 8, september: 8, oct: 9, october: 9,
+        nov: 10, november: 10, dec: 11, december: 11,
+      };
 
-      // Try DD/MM/YYYY or DD-MM-YYYY
-      if (!fixtureDate) {
-        const dmy = dateStr.match(/(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})/);
-        if (dmy) {
-          const year = dmy[3].length === 2 ? `20${dmy[3]}` : dmy[3];
-          fixtureDate = new Date(`${year}-${dmy[2].padStart(2, "0")}-${dmy[1].padStart(2, "0")}`);
+      // Try "7 Mar 2026" or "7 March 2026"
+      const textDate = dateStr.match(
+        /(\d{1,2})\s+(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s*(\d{2,4})?/i
+      );
+      if (textDate) {
+        const day = parseInt(textDate[1], 10);
+        const month = monthMap[textDate[2].toLowerCase()];
+        const yearStr = textDate[3] || String(new Date().getFullYear());
+        const year = parseInt(yearStr.length === 2 ? `20${yearStr}` : yearStr, 10);
+        if (month !== undefined) {
+          fixtureDate = new Date(Date.UTC(year, month, day));
         }
       }
 
-      // Try "DD Month YYYY" or "DD Month"
-      if (!fixtureDate) {
-        const textDate = dateStr.match(
-          /(\d{1,2})\s+(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s*(\d{2,4})?/i
-        );
-        if (textDate) {
-          const year = textDate[3] || String(new Date().getFullYear());
-          const fullYear = year.length === 2 ? `20${year}` : year;
-          fixtureDate = new Date(`${textDate[2]} ${textDate[1]}, ${fullYear}`);
+      // Fallback: try ISO format (already UTC when using YYYY-MM-DD)
+      if (!fixtureDate || isNaN(fixtureDate.getTime())) {
+        const isoMatch = dateStr.match(/(\d{4})-(\d{2})-(\d{2})/);
+        if (isoMatch) {
+          fixtureDate = new Date(Date.UTC(
+            parseInt(isoMatch[1], 10),
+            parseInt(isoMatch[2], 10) - 1,
+            parseInt(isoMatch[3], 10)
+          ));
+        }
+      }
+
+      // Fallback: try DD/MM/YYYY
+      if (!fixtureDate || isNaN(fixtureDate.getTime())) {
+        const dmy = dateStr.match(/(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})/);
+        if (dmy) {
+          const yearStr = dmy[3].length === 2 ? `20${dmy[3]}` : dmy[3];
+          fixtureDate = new Date(Date.UTC(
+            parseInt(yearStr, 10),
+            parseInt(dmy[2], 10) - 1,
+            parseInt(dmy[1], 10)
+          ));
         }
       }
 
