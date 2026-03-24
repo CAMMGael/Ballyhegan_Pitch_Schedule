@@ -4,9 +4,12 @@
 
 A web application for Ballyhegan Davitts GAA Club to manage pitch booking and scheduling. Coaches request venue time, admins approve/decline, and a public calendar shows all confirmed bookings. The system also imports fixtures from the club's GAA website and detects scheduling conflicts.
 
-**Live URL:** https://ballyhegan-pitch-schedule.vercel.app (Vercel free tier)
-**GitHub:** https://github.com/CAMMGael/Ballyhegan_Pitch_Schedule.git
+**Live URL:** https://ballyheganpitchschedulevercel.vercel.app
+**GitHub (main):** https://github.com/CAMMGael/Ballyhegan_Pitch_Schedule.git (remote: `origin`)
+**GitHub (Vercel):** https://github.com/CAMMGael/ballyhegan_pitch_schedule_vercel.git (remote: `vercel`)
 **Local path:** /Users/cmorgan/Documents/NotWork/Ballyhegan/Ballyhegan_Pitch_Schedule
+
+> **IMPORTANT:** Vercel deploys from the `vercel` remote, NOT `origin`. Always push to both after changes.
 
 ## Tech Stack
 
@@ -22,6 +25,28 @@ A web application for Ballyhegan Davitts GAA Club to manage pitch booking and sc
 | Hosting | Vercel (Hobby/free tier, auto-deploys from main branch) |
 | Scraping | Cheerio (for GAA fixtures) |
 
+## Git Configuration
+
+**CRITICAL: All commits MUST use the following git identity, or Vercel will reject them as "unverified commit":**
+
+```
+git config user.name "CAMMGael"
+git config user.email "comghall.anthony.morgan@gmail.com"
+```
+
+This is set locally on the repo already. Do NOT use the global config (`COMGHALL MORGAN` / `CMorgan3@uk.ibm.com`) for this project.
+
+**Two remotes are configured:**
+- `origin` → `Ballyhegan_Pitch_Schedule` (main repo)
+- `vercel` → `ballyhegan_pitch_schedule_vercel` (Vercel deployment repo)
+
+**Deploy workflow:**
+```bash
+git add <files>
+git commit -m "message"
+git push origin main && git push vercel main
+```
+
 ## Credentials & Services
 
 All credentials are in `.env.local` (gitignored). The `.env.example` file shows the required keys.
@@ -31,6 +56,13 @@ All credentials are in `.env.local` (gitignored). The `.env.example` file shows 
 - **Neon CLI:** Authenticated via `npx neonctl@latest`
 - **Default admin login:** `admin@ballyhegan.com` / `admin123` (seeded)
 - **Default team password:** `changeme123` (seeded for all 18 teams)
+
+**Vercel environment variables** (set via `npx vercel env ls` to check):
+- `DATABASE_URL` — Neon PostgreSQL connection string
+- `NEXTAUTH_SECRET` — JWT signing secret
+- `NEXTAUTH_URL` — `https://ballyheganpitchschedulevercel.vercel.app`
+- `SMTP_USER` — `ballyhegandavittsitofficer@gmail.com`
+- `SMTP_PASS` — Gmail App Password
 
 ## Architecture
 
@@ -215,20 +247,26 @@ npx prisma studio                    # Visual database browser
 # Build
 npx next build                       # Production build (catches type errors)
 
-# Deploy
-git push origin main                 # Auto-deploys via Vercel
+# Deploy (MUST push to both remotes)
+git push origin main                 # Main repo
+git push vercel main                 # Triggers Vercel auto-deploy
 
 # Server restart (safe — doesn't kill browsers)
 pkill -f "next dev"                  # Kill dev server
 npm run dev                          # Restart
 # DO NOT use: kill $(lsof -ti:3000)  # This kills browser processes too
+
+# Vercel management
+npx vercel env ls                    # List Vercel env vars
+npx vercel env add <NAME> production # Add env var
+npx vercel logs <deployment-id>      # View deployment logs
 ```
 
 ## Known Limitations / Future Work
 
 - **Fixture scraper** — depends on ballyhegan.gaa.ie HTML structure; may break if GAA changes the site
 - **No notification bell UI** — in-app notifications are stored but there's no bell/dropdown in the header to view them yet
-- **Edit booking** — currently admin-only via calendar click; could add team self-edit for pending bookings
+- **Edit booking** — teams can now request modifications from calendar (cancels old, creates new pending); admins can edit directly
 - **Calendar resource view** — FullCalendar premium Scheduler plugin shows venues as rows; free version uses venue filter dropdown instead
 - **Neon cold starts** — ~1-2s delay after idle periods; could add ISR caching for public calendar
 - **Vercel function timeout** — 10s limit on free tier; fixture scraper must complete within this window
