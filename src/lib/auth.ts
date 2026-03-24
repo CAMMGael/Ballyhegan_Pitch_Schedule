@@ -99,4 +99,6 @@ export const authOptions: NextAuthOptions = {
     strategy: "jwt",
     maxAge: 7 * 24 * 60 * 60, // 7 days
   },
+  // Trust the host header on Vercel instead of relying on NEXTAUTH_URL
+  ...(process.env.VERCEL ? { trustHost: true } : {}),
 };
