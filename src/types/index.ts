@@ -21,8 +21,10 @@ export interface CalendarEvent {
   extendedProps: {
     bookingType: BookingType | "closed";
     status: BookingStatus;
+    teamId?: string;
     teamName?: string;
     opponent?: string;
+    venueId: string;
     venueName: string;
     pitchSection?: string;
     notes?: string;

@@ -87,8 +87,10 @@ export async function GET(req: NextRequest) {
       extendedProps: {
         bookingType: booking.bookingType as CalendarEvent["extendedProps"]["bookingType"],
         status: booking.status as CalendarEvent["extendedProps"]["status"],
+        teamId: booking.teamId ?? undefined,
         teamName: booking.team?.name,
         opponent: booking.opponent ?? undefined,
+        venueId: booking.venueId,
         venueName: booking.venue.name,
         pitchSection: booking.pitchSectionMode,
         notes: booking.notes ?? undefined,
@@ -124,6 +126,7 @@ export async function GET(req: NextRequest) {
         extendedProps: {
           bookingType: "closed",
           status: "approved",
+          venueId: closure.venueId,
           venueName: closure.venue.name,
           notes: closure.reason ?? undefined,
         },
@@ -146,7 +149,8 @@ export async function GET(req: NextRequest) {
           extendedProps: {
             bookingType: "closed",
             status: "approved",
-            venueName: closure.venue.name,
+            venueId: closure.venueId,
+          venueName: closure.venue.name,
             notes: closure.reason ?? undefined,
           },
         });
@@ -166,6 +170,7 @@ export async function GET(req: NextRequest) {
         extendedProps: {
           bookingType: "closed",
           status: "approved",
+          venueId: closure.venueId,
           venueName: closure.venue.name,
           notes: closure.reason ?? undefined,
         },
