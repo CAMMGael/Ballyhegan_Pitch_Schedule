@@ -8,6 +8,53 @@ import crypto from "crypto";
 
 const FIXTURES_URL = "https://ballyhegan.gaa.ie/fixtures-results/";
 
+// Map GAA website sport/grade/age to Ballyhegan team slug.
+// Sport comes from the competition URL path (football, ladies_football).
+// Grade comes from the URL path (senior, junior, minor, juvenile, underage, u21).
+// Age is extracted from the competition name when present (e.g. U14, U16).
+function resolveTeamSlug(sport: string, grade: string, competition: string): string | null {
+  // Skip hurling and camogie — no club teams for those sports
+  if (sport === "hurling" || sport === "camogie") {
+    return null;
+  }
+
+  const isLadies = sport === "ladies_football";
+
+  // Extract age group from competition name (e.g. "U-14", "U16", "Under 20")
+  const uMatch = competition.match(/\bU-?(\d+)/i);
+  const underMatch = competition.match(/\bUnder\s*(\d+)/i);
+  const age = uMatch ? parseInt(uMatch[1], 10)
+    : underMatch ? parseInt(underMatch[1], 10)
+    : null;
+
+  switch (grade) {
+    case "senior":
+      return isLadies ? "ladies-senior" : "mens-senior";
+    case "junior":
+      // Junior is the grade Ballyhegan Mens Senior play at
+      return "mens-senior";
+    case "u21":
+      return "u21-boys";
+    case "minor":
+      // Minor = U18
+      return isLadies ? "minor-girls" : "minor-boys";
+    case "juvenile":
+      // Juvenile = typically U16
+      if (age === 16) return isLadies ? "u16-girls" : "u16-boys";
+      // Fallback for unexpected juvenile age
+      if (age && age <= 18) return isLadies ? `u${age}-girls` : `u${age}-boys`;
+      return isLadies ? "u16-girls" : "u16-boys";
+    case "underage":
+      // Underage covers U8–U14, age must come from competition name
+      if (age && age >= 8 && age <= 14) {
+        return isLadies ? `u${age}-girls` : `u${age}-boys`;
+      }
+      return null; // Can't determine team without age
+    default:
+      return null;
+  }
+}
+
 function hashFixture(data: {
   date: string;
   time: string;
@@ -163,6 +210,8 @@ export async function POST(req: NextRequest) {
       awayTeam: string;
       competition: string;
       venue: string;
+      sport: string;   // e.g. "football", "ladies_football", "hurling"
+      grade: string;    // e.g. "senior", "minor", "juvenile", "underage", "u21"
     }> = [];
 
     // Iterate over each fixture block inside the fixtures tab
@@ -187,6 +236,13 @@ export async function POST(req: NextRequest) {
       const timeText = $el.find(".time").first().text().trim();
       const competition = $el.find(".competition-name").first().text().trim();
 
+      // Extract sport and grade from the competition link URL
+      // e.g. /fixtures-results/ladies_football/juvenile/armagh-lgfa-u16-league/...
+      const compHref = $el.find(".competition-name a").first().attr("href") || "";
+      const pathMatch = compHref.match(/\/fixtures-results\/([^/]+)\/([^/]+)\//);
+      const sport = pathMatch ? pathMatch[1] : "";
+      const grade = pathMatch ? pathMatch[2] : "";
+
       // Venue is inside .more_info, after the <strong>Venue:</strong> label
       const venueLink = $el.find(".more_info a").first();
       const venue = venueLink.length ? venueLink.text().trim() : "";
@@ -199,16 +255,25 @@ export async function POST(req: NextRequest) {
           awayTeam,
           competition,
           venue,
+          sport,
+          grade,
         });
       }
     });
 
     // Filter to home fixtures only (venue contains "Ballyhegan" or home team is Ballyhegan)
+    // Also skip hurling/camogie as the club has no teams for those sports
     const homeFixtures = fixtureData.filter(
       (f) =>
-        f.venue.toLowerCase().includes("ballyhegan") ||
-        f.homeTeam.toLowerCase().includes("ballyhegan")
+        f.sport !== "hurling" && f.sport !== "camogie" &&
+        (f.venue.toLowerCase().includes("ballyhegan") ||
+         f.homeTeam.toLowerCase().includes("ballyhegan"))
     );
+
+    // Pre-load all teams keyed by slug for fast lookup
+    const allTeams = await prisma.team.findMany({ where: { isActive: true } });
+    const teamsBySlug = new Map(allTeams.map((t) => [t.slug, t]));
+    let skippedNoTeam = 0;
 
     // Process each home fixture
     for (const fixture of homeFixtures) {
@@ -280,6 +345,13 @@ export async function POST(req: NextRequest) {
         continue; // Skip unparseable dates
       }
 
+      // Resolve which Ballyhegan team this fixture belongs to
+      const teamSlug = resolveTeamSlug(fixture.sport, fixture.grade, fixture.competition);
+      const team = teamSlug ? teamsBySlug.get(teamSlug) : null;
+      if (!team) {
+        skippedNoTeam++;
+      }
+
       const hash = hashFixture({
         date: fixtureDate.toISOString().split("T")[0],
         time: normalizedTime,
@@ -308,6 +380,7 @@ export async function POST(req: NextRequest) {
       const bookingEndTime = addMinutesToTime(normalizedTime, matchDuration);
 
       // Check for conflicts with existing bookings
+      let isDuplicate = false;
       let hasConflict = false;
       if (defaultVenue) {
         const existingBookings = await prisma.booking.findMany({
@@ -318,15 +391,32 @@ export async function POST(req: NextRequest) {
           },
         });
 
-        hasConflict = existingBookings.some((b) =>
+        const overlapping = existingBookings.filter((b) =>
           timesOverlap(bookingStartTime, bookingEndTime, b.startTime, b.endTime)
         );
 
+        // Check if any overlapping booking is a duplicate match for the same team
+        // (manual match booking or previous fixture import that had a different hash)
+        isDuplicate = overlapping.some((b) =>
+          b.teamId === (team?.id ?? null) &&
+          (b.bookingType === "match" || b.bookingType === "fixture_import")
+        );
+
+        if (isDuplicate) {
+          skippedDuplicates++;
+          continue; // Manual booking already covers this fixture
+        }
+
+        // Non-duplicate conflict (e.g. training session) — still import but notify admins
+        hasConflict = overlapping.length > 0;
         if (hasConflict) {
           conflicts++;
+          const conflictDetails = overlapping
+            .map((b) => `${b.bookingType} ${b.startTime}-${b.endTime}`)
+            .join(", ");
           await notifyAllAdmins(
             "Fixture Import Conflict",
-            `Imported fixture "${fixture.homeTeam} vs ${fixture.awayTeam}" on ${fixtureDate.toISOString().split("T")[0]} at ${normalizedTime} conflicts with an existing booking.`
+            `Imported fixture "${fixture.homeTeam} vs ${fixture.awayTeam}" on ${fixtureDate.toISOString().split("T")[0]} at ${normalizedTime} conflicts with existing booking(s): ${conflictDetails}. The fixture has been imported — please review and resolve.`
           );
         }
       }
@@ -336,6 +426,7 @@ export async function POST(req: NextRequest) {
       if (defaultVenue) {
         const booking = await prisma.booking.create({
           data: {
+            teamId: team?.id || null,
             venueId: defaultVenue.id,
             bookingDate: fixtureDate,
             startTime: bookingStartTime,
@@ -346,7 +437,7 @@ export async function POST(req: NextRequest) {
             pitchSectionIndex: 1,
             opponent: fixture.awayTeam,
             competition: fixture.competition || null,
-            notes: `Auto-imported from GAA website`,
+            notes: `Auto-imported from GAA website${team ? ` — ${team.name}` : ""}`,
             createdByType: "system",
             createdById: "fixture-scraper",
           },
@@ -358,6 +449,7 @@ export async function POST(req: NextRequest) {
       await prisma.importedFixture.create({
         data: {
           externalHash: hash,
+          teamId: team?.id || null,
           venueId: defaultVenue?.id,
           bookingId: bookingId,
           fixtureDate: fixtureDate,
@@ -380,6 +472,7 @@ export async function POST(req: NextRequest) {
       details: {
         imported,
         skippedDuplicates,
+        skippedNoTeam,
         conflicts,
         totalParsed: fixtureData.length,
         homeFixtures: homeFixtures.length,
@@ -391,6 +484,7 @@ export async function POST(req: NextRequest) {
       success: true,
       imported,
       skippedDuplicates,
+      skippedNoTeam,
       conflicts,
     });
   } catch (error) {

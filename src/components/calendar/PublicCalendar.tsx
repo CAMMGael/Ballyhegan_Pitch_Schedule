@@ -29,6 +29,8 @@ interface Team {
 
 interface PublicCalendarProps {
   includeAll?: boolean;
+  defaultVenueSlug?: string;
+  filterVenueId?: string;
 }
 
 function generateTimeOptions(): string[] {
@@ -43,7 +45,7 @@ function generateTimeOptions(): string[] {
 
 const TIME_OPTIONS = generateTimeOptions();
 
-export function PublicCalendar({ includeAll = false }: PublicCalendarProps) {
+export function PublicCalendar({ includeAll = false, defaultVenueSlug, filterVenueId }: PublicCalendarProps) {
   const { data: session } = useSession();
   const router = useRouter();
   const calendarRef = useRef<FullCalendar>(null);
@@ -102,9 +104,16 @@ export function PublicCalendar({ includeAll = false }: PublicCalendarProps) {
   }, []);
 
   useEffect(() => {
-    fetch("/api/venues").then((r) => r.json()).then(setVenues).catch(console.error);
+    fetch("/api/venues").then((r) => r.json()).then((v: Venue[]) => {
+      setVenues(v);
+      // Default to a specific venue if requested and no external filter is controlling it
+      if (defaultVenueSlug && !filterVenueId) {
+        const match = v.find((venue) => venue.slug === defaultVenueSlug);
+        if (match) setSelectedVenue(match.id);
+      }
+    }).catch(console.error);
     fetch("/api/teams").then((r) => r.json()).then(setTeams).catch(console.error);
-  }, []);
+  }, [defaultVenueSlug, filterVenueId]);
 
   const fetchEvents = useCallback(
     (
@@ -126,6 +135,13 @@ export function PublicCalendar({ includeAll = false }: PublicCalendarProps) {
     },
     [selectedVenue, selectedTeams, includeAll]
   );
+
+  // Sync venue filter from external prop (e.g. booking page venue selector)
+  useEffect(() => {
+    if (filterVenueId !== undefined) {
+      setSelectedVenue(filterVenueId || "all");
+    }
+  }, [filterVenueId]);
 
   useEffect(() => {
     calendarRef.current?.getApi().refetchEvents();

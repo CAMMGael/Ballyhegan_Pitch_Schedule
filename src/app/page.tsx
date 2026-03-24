@@ -11,7 +11,7 @@ export default function HomePage() {
           View all approved bookings and fixtures across club venues.
         </p>
       </div>
-      <PublicCalendar />
+      <PublicCalendar defaultVenueSlug="main-pitch" />
     </div>
   );
 }

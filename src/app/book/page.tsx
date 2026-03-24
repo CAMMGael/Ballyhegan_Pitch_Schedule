@@ -275,7 +275,7 @@ function BookPage() {
 
       {showCalendar && (
         <div className="mb-6">
-          <PublicCalendar includeAll />
+          <PublicCalendar includeAll filterVenueId={venueId} />
         </div>
       )}
 
